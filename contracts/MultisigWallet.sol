@@ -15,8 +15,19 @@ contract MultisigWallet is Ownable {
         uint256 lastContributionTimestamp; // Last time they contributed
         uint256 investmentEarnings; // Interest/earnings from investment
         uint256 withdrawalTimestamp; // Last time they made a withdrawal
+        uint256 investmentStartTimestamp; // When the participant's investment started
+        bool isInvested; // True if the participant has locked funds in investment
+        uint256 investedAmount; // The amount of principal invested
+        uint256 nextInterestTimestamp; // When the next interest payout is due
+        uint256 interestEarned; // Total interest earned over the investment period
     }
 
+    struct Approval {
+        mapping(address => bool) hasApproved;
+        uint256 approvedCount;
+    }
+
+    mapping(address => Approval) public approvals;
     mapping(address => Participant) public participants;
     uint256 public participantCount;
     uint256 public fixedMonthlyContribution; // Fixed amount to contribute monthly
@@ -34,6 +45,8 @@ contract MultisigWallet is Ownable {
     uint256 public investmentReturnRate; // Monthly interest rate (e.g., 2%)
     uint256 public investmentBalance; // Funds allocated for investment
     uint256 public lastInterestDistributionTimestamp; // Timestamp of last interest payout
+    uint256 public monthlyInterestRate = 15; // Representing 1.5% (15 per thousand)
+
 
     // Withdrawals
     uint256 public withdrawalFee = 5; // Standard withdrawal fee (5%)
@@ -76,6 +89,15 @@ contract MultisigWallet is Ownable {
     event InterestDistributed(uint256 amount);
     event ParticipantAdded(address indexed participant, uint256 timestamp);
     event SwapCompleted(address indexed participant, address tokenIn, uint256 amountIn, uint256 amountOut);
+    event InvestmentStarted(address indexed participant, uint256 amount);
+
+    // Event for when a participant withdraws both their principal and interest after investment
+    event PrincipalAndInterestWithdrawn(address indexed participant, uint256 totalWithdrawAmount);
+    // Event for when a participant makes a regular withdrawal (non-invested participants)
+    event WithdrawalMade(address indexed participant, uint256 amountWithdrawn, uint256 fee);
+
+    // Event for when a participant approves a withdrawal
+    event WithdrawalApproved(address indexed participant, address indexed approver);
 
 
     modifier onlyWhenActive() {
@@ -132,35 +154,34 @@ contract MultisigWallet is Ownable {
         require(_amount > 0, "Amount must be greater than zero");
         require(supportedTokenAddresses[_token], "Unsupported token");
 
-        // Get the participant's last contribution time and calculate missed cycles (if any)
+        // Calculate missed contribution cycles and required contribution
         uint256 lastContributionTime = participants[msg.sender].lastContributionTimestamp;
         uint256 missedCycles = (block.timestamp - lastContributionTime) / 30 days;
-
-        // Calculate the required minimum contribution considering missed cycles
         uint256 requiredContribution = fixedMonthlyContribution * (missedCycles + 1);
 
-        // Check if the deposit amount covers the fixed contribution and any missed cycles
+        // Ensure the deposit amount covers missed contributions
         require(_amount >= requiredContribution, "Insufficient amount to cover missed contributions");
 
-        // If the token is the primary saving token (USDC), directly deposit
+        // Handle primary token deposit
         if (_token == address(primaryToken)) {
             // Transfer USDC to the contract
             require(IERC20(_token).transferFrom(msg.sender, address(this), _amount), "USDC transfer failed");
 
-            // Update the participant's balance with the deposit amount
+            // Update the participant's balance and reset missed contributions
             participants[msg.sender].balance += _amount;
-
-            // Reset the missed contributions and update the last contribution timestamp
             participants[msg.sender].missedContributions = 0;
             participants[msg.sender].lastContributionTimestamp = block.timestamp;
 
             // Emit the contribution event
             emit ContributionMade(msg.sender, _amount);
+
+
         } else {
-            // If the token is not USDC, call the swap function to convert to USDC
+            // Swap non-primary token into USDC
             swapToken(_token, _amount);
         }
     }
+
 
     // Function to swap tokens to the primary token (USDC)
     function swapToken(address _token, uint256 _amount) internal {
@@ -217,4 +238,95 @@ contract MultisigWallet is Ownable {
         path[1] = address(primaryToken); // Output token (USDC)
         return path;
     }
+
+    function invest() external {
+        Participant storage participant = participants[msg.sender];
+        // Check if the participant is already invested
+        require(!participant.isInvested, "Active investment exists. Withdraw first before reinvesting.");
+        require(participant.balance >= 2 * fixedMonthlyContribution, "Insufficient balance to invest");
+
+        // Use the participant's total balance for investing
+        uint256 amountToInvest = participant.balance;
+
+        // Mark the participant as invested and lock the funds
+        participant.isInvested = true;
+        participant.investmentStartTimestamp = block.timestamp;
+        participant.investedAmount = amountToInvest;
+        participant.nextInterestTimestamp = block.timestamp + 30 days;
+
+        // Emit an event for investment start
+        emit InvestmentStarted(msg.sender, amountToInvest);
+    }
+
+    function withdraw() external {
+        Participant storage participant = participants[msg.sender];
+        require(participant.balance > 0, "No balance to withdraw");
+
+        // Check if the participant is invested
+        if (participant.isInvested) {
+            // Ensure the 3-month lock period has passed
+            require(block.timestamp >= participant.investmentStartTimestamp + 90 days, "Investment lock period has not ended");
+
+            // Ensure quorum approval is met before proceeding with withdrawal
+            require(approvals[msg.sender].approvedCount >= totalParticipants - 1, "Quorum approval not met");
+
+            // Calculate interest based on how many months have passed since investment start
+            uint256 monthsInvested = (block.timestamp - participant.investmentStartTimestamp) / 30 days;
+            uint256 totalInterest = (participant.investedAmount * monthlyInterestRate * monthsInvested) / 1000;
+
+            // Calculate total withdrawal amount (principal + interest)
+            uint256 totalWithdrawAmount = participant.investedAmount + totalInterest;
+
+            // Reset investment details
+            participant.isInvested = false;
+            participant.investedAmount = 0;
+            participant.interestEarned = 0;
+            participant.investmentStartTimestamp = 0;
+            participant.nextInterestTimestamp = 0;
+
+            // Transfer the total withdrawal amount to the participant
+            require(IERC20(primaryToken).transfer(msg.sender, totalWithdrawAmount), "Transfer failed");
+
+            // Emit withdrawal event
+            emit PrincipalAndInterestWithdrawn(msg.sender, totalWithdrawAmount);
+        } else {
+            // For non-investors, allow regular withdrawal with a 5% fee
+            require(approvals[msg.sender].approvedCount >= totalParticipants - 1, "Quorum approval not met");
+
+            uint256 amountToWithdraw = participant.balance;
+            uint256 fee = (amountToWithdraw * withdrawalFee) / 100;
+            uint256 finalWithdrawAmount = amountToWithdraw - fee;
+
+            // Reset the participant's balance
+            participant.balance = 0;
+
+            // Transfer the final amount to the participant
+            require(IERC20(primaryToken).transfer(msg.sender, finalWithdrawAmount), "Transfer failed");
+
+            // Emit withdrawal event
+            emit WithdrawalMade(msg.sender, finalWithdrawAmount, fee);
+        }
+
+            // Reset approval count after successful withdrawal
+            approvals[msg.sender].approvedCount = 0;
+    }
+
+
+    // Function for participants to approve a withdrawal request
+    function approveWithdrawal(address participant) external {
+        require(participant != msg.sender, "You cannot approve your own withdrawal");
+        require(participants[msg.sender].participantAddress != address(0), "Only participants can approve");
+
+        // Ensure the participant hasn't already approved this withdrawal
+        require(!approvals[participant].hasApproved[msg.sender], "You have already approved this withdrawal");
+
+        // Mark the participant as having approved
+        approvals[participant].hasApproved[msg.sender] = true;
+        approvals[participant].approvedCount++;
+
+        // Emit an event for the approval
+        emit WithdrawalApproved(participant, msg.sender);
+    }
+
+
 }

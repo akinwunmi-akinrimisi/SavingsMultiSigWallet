@@ -132,19 +132,32 @@ contract MultisigWallet is Ownable {
         require(_amount > 0, "Amount must be greater than zero");
         require(supportedTokenAddresses[_token], "Unsupported token");
 
+        // Get the participant's last contribution time and calculate missed cycles (if any)
+        uint256 lastContributionTime = participants[msg.sender].lastContributionTimestamp;
+        uint256 missedCycles = (block.timestamp - lastContributionTime) / 30 days;
+
+        // Calculate the required minimum contribution considering missed cycles
+        uint256 requiredContribution = fixedMonthlyContribution * (missedCycles + 1);
+
+        // Check if the deposit amount covers the fixed contribution and any missed cycles
+        require(_amount >= requiredContribution, "Insufficient amount to cover missed contributions");
+
         // If the token is the primary saving token (USDC), directly deposit
         if (_token == address(primaryToken)) {
             // Transfer USDC to the contract
             require(IERC20(_token).transferFrom(msg.sender, address(this), _amount), "USDC transfer failed");
 
-            // Update the participant's balance
+            // Update the participant's balance with the deposit amount
             participants[msg.sender].balance += _amount;
+
+            // Reset the missed contributions and update the last contribution timestamp
+            participants[msg.sender].missedContributions = 0;
             participants[msg.sender].lastContributionTimestamp = block.timestamp;
 
-            // Emit the event
+            // Emit the contribution event
             emit ContributionMade(msg.sender, _amount);
         } else {
-            // If the token is not USDC, call the swap function
+            // If the token is not USDC, call the swap function to convert to USDC
             swapToken(_token, _amount);
         }
     }

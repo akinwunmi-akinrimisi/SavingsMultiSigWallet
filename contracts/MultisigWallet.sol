@@ -83,4 +83,48 @@ contract MultisigWallet is Ownable {
         _;
     }
 
+    // Constructor to initialize the primary token, supported tokens, and Uniswap router
+    constructor(
+        address _primaryToken,
+        address[] memory _supportedTokens,
+        uint256 _fixedMonthlyContribution,
+        uint256 _investmentThreshold,
+        uint256 _investmentPercentage,
+        uint256 _investmentReturnRate,
+        address _uniswapRouter // Uniswap V2 router address
+    ) {
+        primaryToken = IERC20(_primaryToken);
+
+        // Add supported tokens to the mapping
+        for (uint256 i = 0; i < _supportedTokens.length; i++) {
+            supportedTokenAddresses[_supportedTokens[i]] = true; // Mark token as supported
+        }
+
+        fixedMonthlyContribution = _fixedMonthlyContribution;
+        investmentThreshold = _investmentThreshold;
+        investmentPercentage = _investmentPercentage;
+        investmentReturnRate = _investmentReturnRate;
+        lastInterestDistributionTimestamp = block.timestamp;
+        uniswapRouter = _uniswapRouter; // Set the Uniswap V2 router address
+    }
+
+    // Function to add participants (must be owner/admin)
+    function addParticipant(address _participant) external onlyOwner {
+        require(_participant != address(0), "Invalid participant address");
+        require(participants[_participant].participantAddress == address(0), "Participant already exists");
+
+        participants[_participant].participantAddress = _participant;
+        participants[_participant].balance = 0;
+        participants[_participant].missedContributions = 0;
+        participants[_participant].lastContributionTimestamp = block.timestamp;
+        participants[_participant].investmentEarnings = 0;
+        participants[_participant].withdrawalTimestamp = 0;
+
+        participantAddresses.push(_participant);
+        participantCount++;
+        totalParticipants++;
+
+        emit ParticipantAdded(_participant, block.timestamp);
+    }
+
 }

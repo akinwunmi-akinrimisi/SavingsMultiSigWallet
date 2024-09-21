@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol"; // Import Uniswap V2 router
 
-contract MultisigWallet is Ownable {
+contract MultisigWallet is Ownable (msg.sender){
     // Core state variables
     struct Participant {
         address participantAddress;
@@ -83,8 +83,6 @@ contract MultisigWallet is Ownable {
 
     // Events
     event ContributionMade(address indexed participant, uint256 amount);
-    event WithdrawalMade(address indexed participant, uint256 amount, uint256 fee);
-    event EmergencyWithdrawal(address indexed participant, uint256 amount, uint256 fee);
     event InvestmentMade(uint256 amount);
     event InterestDistributed(uint256 amount);
     event ParticipantAdded(address indexed participant, uint256 timestamp);

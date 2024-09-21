@@ -90,6 +90,8 @@ contract MultisigWallet is Ownable {
     event ParticipantAdded(address indexed participant, uint256 timestamp);
     event SwapCompleted(address indexed participant, address tokenIn, uint256 amountIn, uint256 amountOut);
     event InvestmentStarted(address indexed participant, uint256 amount);
+    // Event for when a participant makes an emergency withdrawal
+    event EmergencyWithdrawal(address indexed participant, uint256 amountWithdrawn, uint256 fee);
 
     // Event for when a participant withdraws both their principal and interest after investment
     event PrincipalAndInterestWithdrawn(address indexed participant, uint256 totalWithdrawAmount);
@@ -98,6 +100,15 @@ contract MultisigWallet is Ownable {
 
     // Event for when a participant approves a withdrawal
     event WithdrawalApproved(address indexed participant, address indexed approver);
+
+    // Event for updating the fixed monthly contribution
+    event MonthlyContributionUpdated(uint256 newContribution);
+
+    // Event for updating the withdrawal fee
+    event WithdrawalFeeUpdated(uint256 newWithdrawalFee);
+
+    // Event for updating the interest rate
+    event InterestRateUpdated(uint256 newInterestRate);
 
 
     modifier onlyWhenActive() {
@@ -326,6 +337,117 @@ contract MultisigWallet is Ownable {
 
         // Emit an event for the approval
         emit WithdrawalApproved(participant, msg.sender);
+    }
+
+
+    function emergencyWithdraw() external {
+        Participant storage participant = participants[msg.sender];
+
+        // Check if the participant has a balance or is invested
+        if (participant.isInvested) {
+            // The participant is still within the lock period but wants to withdraw early
+            require(block.timestamp < participant.investmentStartTimestamp + 90 days, "Cannot use emergency withdrawal after the lock period");
+            require(participant.investedAmount > 0, "No invested balance to withdraw");
+
+            // Calculate interest earned up to this point
+            uint256 monthsInvested = (block.timestamp - participant.investmentStartTimestamp) / 30 days;
+            uint256 totalInterest = (participant.investedAmount * monthlyInterestRate * monthsInvested) / 1000;
+
+            // Calculate the total amount to withdraw (principal + interest)
+            uint256 totalWithdrawAmount = participant.investedAmount + totalInterest;
+
+            // Apply emergency withdrawal fee (10%)
+            uint256 fee = (totalWithdrawAmount * emergencyWithdrawalFee) / 100;
+            uint256 finalWithdrawAmount = totalWithdrawAmount - fee;
+
+            // Reset the participant's investment status
+            participant.isInvested = false;
+            participant.investedAmount = 0;
+            participant.interestEarned = 0;
+            participant.investmentStartTimestamp = 0;
+            participant.nextInterestTimestamp = 0;
+
+            // Transfer the final withdrawal amount to the participant
+            require(IERC20(primaryToken).transfer(msg.sender, finalWithdrawAmount), "Transfer failed");
+
+            // Emit an event for emergency withdrawal
+            emit EmergencyWithdrawal(msg.sender, finalWithdrawAmount, fee);
+        } else {
+            // For non-invested participants, check if they have a balance
+            require(participant.balance > 0, "No balance to withdraw");
+
+            // Apply the emergency withdrawal fee (10%)
+            uint256 amountToWithdraw = participant.balance;
+            uint256 fee = (amountToWithdraw * emergencyWithdrawalFee) / 100;
+            uint256 finalWithdrawAmount = amountToWithdraw - fee;
+
+            // Reset the participant's balance
+            participant.balance = 0;
+
+            // Transfer the final amount to the participant
+            require(IERC20(primaryToken).transfer(msg.sender, finalWithdrawAmount), "Transfer failed");
+
+            // Emit an event for emergency withdrawal
+            emit EmergencyWithdrawal(msg.sender, finalWithdrawAmount, fee);
+        }
+    }
+
+    function updateMonthlyContribution(uint256 _newContribution) external onlyOwner {
+        require(_newContribution > 0, "Contribution must be greater than zero");
+        fixedMonthlyContribution = _newContribution;
+
+        emit MonthlyContributionUpdated(_newContribution);
+    }
+
+    function updateWithdrawalFee(uint256 _newWithdrawalFee) external onlyOwner {
+        require(_newWithdrawalFee >= 0 && _newWithdrawalFee <= 100, "Fee must be between 0 and 100");
+        withdrawalFee = _newWithdrawalFee;
+
+        emit WithdrawalFeeUpdated(_newWithdrawalFee);
+    }
+
+
+    function updateInterestRate(uint256 _newInterestRate) external onlyOwner {
+        require(_newInterestRate >= 0, "Interest rate must be non-negative");
+        monthlyInterestRate = _newInterestRate;
+
+        emit InterestRateUpdated(_newInterestRate);
+    }
+
+
+    function checkBalance() external view returns (uint256) {
+        Participant storage participant = participants[msg.sender];
+        return participant.balance;
+    }
+
+    function checkInterestEarned() external view returns (uint256) {
+        Participant storage participant = participants[msg.sender];
+        
+        if (!participant.isInvested) {
+            return 0; // No interest earned if not invested
+        }
+
+        // Calculate interest earned so far
+        uint256 monthsInvested = (block.timestamp - participant.investmentStartTimestamp) / 30 days;
+        uint256 totalInterest = (participant.investedAmount * monthlyInterestRate * monthsInvested) / 1000;
+
+        return totalInterest;
+    }
+
+    function timeLeftToWithdraw() external view returns (uint256) {
+        Participant storage participant = participants[msg.sender];
+        
+        if (!participant.isInvested) {
+            return 0; // No time left if not invested
+        }
+
+        // Calculate the time left before the 3-month lock period ends
+        uint256 timeSinceInvestment = block.timestamp - participant.investmentStartTimestamp;
+        if (timeSinceInvestment >= 90 days) {
+            return 0; // Lock period has ended
+        }
+
+        return (90 days - timeSinceInvestment);
     }
 
 

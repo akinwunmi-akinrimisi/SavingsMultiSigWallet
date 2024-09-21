@@ -127,4 +127,81 @@ contract MultisigWallet is Ownable {
         emit ParticipantAdded(_participant, block.timestamp);
     }
 
+    // Function to deposit tokens (either the primary token or supported tokens)
+    function depositToken(address _token, uint256 _amount) external {
+        require(_amount > 0, "Amount must be greater than zero");
+        require(supportedTokenAddresses[_token], "Unsupported token");
+
+        // If the token is the primary saving token (USDC), directly deposit
+        if (_token == address(primaryToken)) {
+            // Transfer USDC to the contract
+            require(IERC20(_token).transferFrom(msg.sender, address(this), _amount), "USDC transfer failed");
+
+            // Update the participant's balance
+            participants[msg.sender].balance += _amount;
+            participants[msg.sender].lastContributionTimestamp = block.timestamp;
+
+            // Emit the event
+            emit ContributionMade(msg.sender, _amount);
+        } else {
+            // If the token is not USDC, call the swap function
+            swapToken(_token, _amount);
+        }
+    }
+
+    // Function to swap tokens to the primary token (USDC)
+    function swapToken(address _token, uint256 _amount) internal {
+        require(supportedTokenAddresses[_token], "Token is not supported");
+        require(IERC20(_token).allowance(msg.sender, address(this)) >= _amount, "Insufficient token allowance");
+
+        // Transfer the tokens from the user to the contract
+        require(IERC20(_token).transferFrom(msg.sender, address(this), _amount), "Token transfer failed");
+
+        // Approve Uniswap router to spend the tokens
+        IERC20(_token).approve(uniswapRouter, _amount);
+
+        // Define the swap path (token -> USDC)
+        address[] memory path = new address[](2);
+        path[0] = _token; // Input token (DAI, UNI, or LINK)
+        path[1] = address(primaryToken); // Output token (USDC)
+
+        // Calculate minimum amount of USDC to accept based on slippage tolerance
+        uint256 amountOutMin = getAmountOutMin(_token, _amount);
+
+        // Perform the swap on Uniswap
+        IUniswapV2Router02(uniswapRouter).swapExactTokensForTokens(
+            _amount, // Amount of input tokens
+            amountOutMin, // Minimum amount of USDC to receive (after slippage)
+            path, // Path for the swap
+            address(this), // Recipient is the contract
+            block.timestamp + 300 // Deadline (5 minutes from now)
+        );
+
+        // Get the balance of USDC after the swap
+        uint256 usdcBalanceAfterSwap = IERC20(primaryToken).balanceOf(address(this));
+
+        // Update the participant's balance with the received USDC
+        participants[msg.sender].balance += usdcBalanceAfterSwap;
+        participants[msg.sender].lastContributionTimestamp = block.timestamp;
+
+        // Emit a swap completion event
+        emit SwapCompleted(msg.sender, _token, _amount, usdcBalanceAfterSwap);
+    }
+
+    // Helper function to calculate the minimum amount of USDC based on slippage
+    function getAmountOutMin(address _token, uint256 _amount) internal view returns (uint256) {
+        // Get the current exchange rates from Uniswap
+        uint256[] memory amounts = IUniswapV2Router02(uniswapRouter).getAmountsOut(_amount, getPathForTokenToUSDC(_token));
+
+        // Calculate minimum amount of USDC, considering slippage tolerance
+        return amounts[1] - (amounts[1] * slippageTolerance / 10000);
+    }
+
+    // Helper function to define the swap path for Uniswap (token -> USDC)
+    function getPathForTokenToUSDC(address _token) internal view returns (address[] memory) {
+        address[] memory path = new address[](2);
+        path[0] = _token; // Input token
+        path[1] = address(primaryToken); // Output token (USDC)
+        return path;
+    }
 }

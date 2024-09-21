@@ -193,7 +193,7 @@ contract MultisigWallet is Ownable (msg.sender){
 
 
     // Function to swap tokens to the primary token (USDC)
-    function swapToken(address _token, uint256 _amount) internal {
+    function swapToken(address _token, uint256 _amount) public {
         require(supportedTokenAddresses[_token], "Token is not supported");
         require(IERC20(_token).allowance(msg.sender, address(this)) >= _amount, "Insufficient token allowance");
 

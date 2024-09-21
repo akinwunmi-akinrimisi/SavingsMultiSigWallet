@@ -197,6 +197,9 @@ contract MultisigWallet is Ownable (msg.sender){
         require(supportedTokenAddresses[_token], "Token is not supported");
         require(IERC20(_token).allowance(msg.sender, address(this)) >= _amount, "Insufficient token allowance");
 
+        // Ensure we are not swapping USDC for USDC
+        require(_token != address(primaryToken), "Cannot swap USDC for USDC");
+
         // Transfer the tokens from the user to the contract
         require(IERC20(_token).transferFrom(msg.sender, address(this), _amount), "Token transfer failed");
 

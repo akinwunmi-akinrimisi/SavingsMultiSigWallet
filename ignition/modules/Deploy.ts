@@ -37,3 +37,5 @@ const MultisigWalletModule = buildModule("MultisigWalletModule", (m) => {
 });
 
 export default MultisigWalletModule;
+
+
